@@ -11,7 +11,7 @@ import android.provider.MediaStore;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.view.View;
-
+import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.lifecycle.Lifecycle;
@@ -161,16 +161,23 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
     }
 
     public void dispose() {
-        if (remoteView != null) {
-            remoteView.onStop();
-            remoteView.onDestroy();
-            remoteView = null;
+        Log.e("ScanKitCrashDebug", "ScanKitCustomMode dispose called");
+
+        try {
+            if (remoteView != null) {
+                remoteView.onPause();     // 🔴 VERY IMPORTANT
+                remoteView.onDestroy();   // 🔴 MUST
+                remoteView = null;
+            }
+        } catch (Exception e) {
+            Log.e("ScanKitCrashDebug", "Error disposing RemoteView", e);
         }
     }
 
     @Override
     public void onStateChanged(@NonNull LifecycleOwner source, @NonNull Lifecycle.Event event) {
         if (remoteView == null) return;
+
         switch (event) {
             case ON_CREATE:
                 remoteView.onCreate(new Bundle());
@@ -189,8 +196,8 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
                 break;
             case ON_DESTROY:
                 remoteView.onDestroy();
+                remoteView = null;   // 🔴 MOST IMPORTANT LINE
                 break;
-            default:
         }
     }
 
