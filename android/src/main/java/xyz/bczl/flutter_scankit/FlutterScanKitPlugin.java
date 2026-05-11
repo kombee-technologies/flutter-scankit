@@ -159,8 +159,8 @@ public class FlutterScanKitPlugin implements FlutterPlugin, ScanKitAPI.ScanKitAp
     @NonNull
     @Override
     public Map<String, Object> decodeYUV(@NonNull byte[] yuv,
-                                      @NonNull Long width, @NonNull Long height,
-                                      @NonNull Map<String, Object> options) {
+                                         @NonNull Long width, @NonNull Long height,
+                                         @NonNull Map<String, Object> options) {
         if (mActivity == null) {
             throw new ScanKitAPI.FlutterError("102", "decode: Activity is null!", "");
         }
