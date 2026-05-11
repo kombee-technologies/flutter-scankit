@@ -55,7 +55,15 @@ public class ScanKitView implements PlatformView {
 
     @Override
     public void dispose() {
+        Log.e("ScanKitCrashDebug", "dispose() called for viewId: " + viewId);
+
+        if (mode != null) {
+            Log.e("ScanKitCrashDebug", "mode is NOT NULL, disposing now");
+            mode.dispose();
+        } else {
+            Log.e("ScanKitCrashDebug", "mode is NULL ❌");
+        }
+
         customModeList.remove(viewId);
-        mode.dispose();
     }
 }
