@@ -30,8 +30,85 @@ public class FlutterScanKitPlugin implements FlutterPlugin, ScanKitAPI.ScanKitAp
     private final LongSparseArray<ScanKitDefaultMode> defaultModeList = new LongSparseArray<>();
     private final LongSparseArray<ScanKitCustomMode> customModeList = new LongSparseArray<>();
 
+    private static boolean isHandlerInstalled = false;
+
+    private static void installUncaughtExceptionHandler() {
+        if (isHandlerInstalled) {
+            return;
+        }
+        final Thread.UncaughtExceptionHandler originalHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(@NonNull Thread thread, @NonNull Throwable throwable) {
+                if (isCannotDeliverBroadcastException(throwable)) {
+                    android.util.Log.e("FlutterScanKitPlugin", "Suppressed CannotDeliverBroadcastException to prevent crash", throwable);
+                    reportNonFatalToCrashlytics(throwable);
+                    return;
+                }
+                if (isImageReaderException(throwable)) {
+                    android.util.Log.e("FlutterScanKitPlugin", "Suppressed ImageReader IllegalArgumentException to prevent crash", throwable);
+                    reportNonFatalToCrashlytics(throwable);
+                    return;
+                }
+                if (originalHandler != null) {
+                    originalHandler.uncaughtException(thread, throwable);
+                } else {
+                    ThreadGroup group = thread.getThreadGroup();
+                    if (group != null) {
+                        group.uncaughtException(thread, throwable);
+                    }
+                }
+            }
+        });
+        isHandlerInstalled = true;
+    }
+
+    private static void reportNonFatalToCrashlytics(Throwable throwable) {
+        try {
+            Class<?> crashlyticsClass = Class.forName("com.google.firebase.crashlytics.FirebaseCrashlytics");
+            java.lang.reflect.Method getInstanceMethod = crashlyticsClass.getMethod("getInstance");
+            Object crashlyticsInstance = getInstanceMethod.invoke(null);
+            java.lang.reflect.Method recordExceptionMethod = crashlyticsClass.getMethod("recordException", Throwable.class);
+            recordExceptionMethod.invoke(crashlyticsInstance, throwable);
+            android.util.Log.i("FlutterScanKitPlugin", "Successfully reported non-fatal exception to Firebase Crashlytics");
+        } catch (Exception e) {
+            android.util.Log.d("FlutterScanKitPlugin", "Firebase Crashlytics not available: " + e.getMessage());
+        }
+    }
+
+    private static boolean isCannotDeliverBroadcastException(Throwable throwable) {
+        Throwable cause = throwable;
+        int depth = 0;
+        while (cause != null && depth < 20) {
+            String name = cause.getClass().getName();
+            if (name.contains("CannotDeliverBroadcastException")) {
+                return true;
+            }
+            cause = cause.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    private static boolean isImageReaderException(Throwable throwable) {
+        Throwable cause = throwable;
+        int depth = 0;
+        while (cause != null && depth < 20) {
+            if (cause instanceof IllegalArgumentException) {
+                String message = cause.getMessage();
+                if (message != null && message.contains("This image was not produced by this ImageReader")) {
+                    return true;
+                }
+            }
+            cause = cause.getCause();
+            depth++;
+        }
+        return false;
+    }
+
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
+        installUncaughtExceptionHandler();
         ScanKitAPI.ScanKitApi.setup(binding.getBinaryMessenger(), this);
         mPluginBinding = binding;
     }
@@ -90,7 +167,7 @@ public class FlutterScanKitPlugin implements FlutterPlugin, ScanKitAPI.ScanKitAp
     public void disposeDefaultMode(@NonNull Long id) {
         ScanKitDefaultMode mode = defaultModeList.get(id);
         if (mode != null) {
-            customModeList.remove(id);
+            defaultModeList.remove(id);
             mode.dispose();
         }
     }
