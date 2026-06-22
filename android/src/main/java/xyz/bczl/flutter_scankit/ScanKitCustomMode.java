@@ -11,6 +11,7 @@ import android.provider.MediaStore;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.view.View;
+import android.widget.FrameLayout;
 import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -39,14 +40,19 @@ import io.flutter.plugin.common.EventChannel;
 @SuppressWarnings("deprecation")
 public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallback, OnLightVisibleCallBack {
     public static final int REQUEST_CODE_PHOTO = 0X1113;
+    private static long lastDisposedTime = 0;
     private int scanTypes = 0;
     private RemoteView remoteView;
+    private FrameLayout containerView;
+    private Lifecycle lifecycle;
     private final EventChannel mEvenChannel;
     private EventChannel.EventSink mEvents;
 
     private final static int EVENT_SCAN_RESULT = 0;
     private final static int EVENT_LIGHT_VISIBLE = 1;
     private Activity mActivity;
+    private final android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private Runnable resumeRunnable = null;
 
     @SuppressWarnings("unchecked")
     ScanKitCustomMode(int viewId, BinaryMessenger messenger, @Nullable Map<String, Object> creationParam, ActivityPluginBinding binding) {
@@ -66,14 +72,40 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
         binding.addActivityResultListener((int requestCode, int resultCode, Intent data) -> {
             if (requestCode == REQUEST_CODE_PHOTO && resultCode == Activity.RESULT_OK) {
                 if (mEvents == null) return true;
+                if (mActivity == null || mActivity.isFinishing()) {
+                    mEvents.error("ACTIVITY_UNAVAILABLE", "Activity is null or finishing", null);
+                    return true;
+                }
                 try {
                     Bitmap bitmap;
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                         ImageDecoder.Source source = ImageDecoder.createSource(mActivity.getContentResolver(), data.getData());
-                        ImageDecoder.OnHeaderDecodedListener listener = (decoder, info, source1) -> decoder.setMutableRequired(true);
+                        ImageDecoder.OnHeaderDecodedListener listener = (decoder, info, source1) -> {
+                            decoder.setMutableRequired(true);
+                            if (info.getSize().getWidth() > 2000 || info.getSize().getHeight() > 2000) {
+                                decoder.setTargetSampleSize(2);
+                            }
+                        };
                         bitmap = ImageDecoder.decodeBitmap(source, listener);
                     } else {
-                        bitmap = MediaStore.Images.Media.getBitmap(mActivity.getContentResolver(), data.getData());
+                        java.io.InputStream input = mActivity.getContentResolver().openInputStream(data.getData());
+                        android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+                        options.inJustDecodeBounds = true;
+                        android.graphics.BitmapFactory.decodeStream(input, null, options);
+                        if (input != null) input.close();
+
+                        int width = options.outWidth;
+                        int height = options.outHeight;
+                        int sampleSize = 1;
+                        if (width > 2000 || height > 2000) {
+                            sampleSize = 2;
+                        }
+
+                        input = mActivity.getContentResolver().openInputStream(data.getData());
+                        options.inJustDecodeBounds = false;
+                        options.inSampleSize = sampleSize;
+                        bitmap = android.graphics.BitmapFactory.decodeStream(input, null, options);
+                        if (input != null) input.close();
                     }
                     HmsScanAnalyzerOptions.Creator creator = new HmsScanAnalyzerOptions.Creator();
                     creator.setPhotoMode(true);
@@ -89,8 +121,9 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
                     } else {
                         mEvents.success(null);
                     }
-                } catch (IOException e) {
+                } catch (Exception e) {
                     e.printStackTrace();
+                    mEvents.error("IMAGE_DECODE_ERROR", e.getMessage(), null);
                 }
                 return true;
             }
@@ -102,34 +135,49 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
         RemoteView.Builder builder = new RemoteView.Builder();
         builder.setContext(mActivity);
 
-        if (creationParam.get("boundingBox") instanceof ArrayList) {
-            ArrayList<Integer> list = (ArrayList<Integer>) creationParam.get("boundingBox");
-            if (list != null) {
-                DisplayMetrics displayMetrics = new DisplayMetrics();
-                mActivity.getWindowManager().getDefaultDisplay().getMetrics(displayMetrics);
-                float density = displayMetrics.density;
-                int left = (int) (list.get(0) * density);
-                int top = (int) (list.get(1) * density);
-                int width = (int) (list.get(2) * density);
-                int height = (int) (list.get(3) * density);
-                builder.setBoundingBox(new Rect(left, top, left + width, top + height));
+        scanTypes = 0;
+        boolean continuouslyScan = false;
+        if (creationParam != null) {
+            if (creationParam.get("boundingBox") instanceof ArrayList) {
+                ArrayList<Integer> list = (ArrayList<Integer>) creationParam.get("boundingBox");
+                if (list != null && list.size() >= 4) {
+                    DisplayMetrics displayMetrics = new DisplayMetrics();
+                    mActivity.getWindowManager().getDefaultDisplay().getMetrics(displayMetrics);
+                    float density = displayMetrics.density;
+                    int left = (int) (list.get(0) * density);
+                    int top = (int) (list.get(1) * density);
+                    int width = (int) (list.get(2) * density);
+                    int height = (int) (list.get(3) * density);
+                    builder.setBoundingBox(new Rect(left, top, left + width, top + height));
+                }
+            }
+
+            Object formatObj = creationParam.get("format");
+            if (formatObj instanceof Integer) {
+                scanTypes = (int) formatObj;
+            }
+
+            Object continuouslyScanObj = creationParam.get("continuouslyScan");
+            if (continuouslyScanObj instanceof Boolean) {
+                continuouslyScan = (boolean) continuouslyScanObj;
             }
         }
 
-        scanTypes = (int) creationParam.get("format");
         int[] args = ScanKitUtilities.getArrayFromFlags(scanTypes);
         int var1 = args[0];
         int[] var2 = Arrays.copyOfRange(args, 1, args.length);
         builder.setFormat(var1, var2);
-        builder.setContinuouslyScan((boolean) creationParam.get("continuouslyScan"));
+        builder.setContinuouslyScan(continuouslyScan);
 
         remoteView = builder.build();
         remoteView.setOnResultCallback(this);
         remoteView.setOnLightVisibleCallback(this);
 
+        containerView = new FrameLayout(mActivity);
+        containerView.addView(remoteView);
 
         HiddenLifecycleReference reference = (HiddenLifecycleReference) binding.getLifecycle();
-        Lifecycle lifecycle = reference.getLifecycle();
+        lifecycle = reference.getLifecycle();
         lifecycle.addObserver(this);
     }
 
@@ -164,11 +212,25 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
         Log.e("ScanKitCrashDebug", "ScanKitCustomMode dispose called");
 
         try {
+            if (lifecycle != null) {
+                lifecycle.removeObserver(this);
+                lifecycle = null;
+            }
+            if (resumeRunnable != null) {
+                mainHandler.removeCallbacks(resumeRunnable);
+                resumeRunnable = null;
+            }
             if (remoteView != null) {
+                if (containerView != null) {
+                    containerView.removeAllViews();
+                }
                 remoteView.onPause();     // 🔴 VERY IMPORTANT
+                remoteView.onStop();      // 🔴 MUST call onStop before onDestroy
                 remoteView.onDestroy();   // 🔴 MUST
                 remoteView = null;
+                lastDisposedTime = System.currentTimeMillis();
             }
+            mEvenChannel.setStreamHandler(null);
         } catch (Exception e) {
             Log.e("ScanKitCrashDebug", "Error disposing RemoteView", e);
         }
@@ -186,9 +248,31 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
                 remoteView.onStart();
                 break;
             case ON_RESUME:
-                remoteView.onResume();
+                if (resumeRunnable != null) {
+                    mainHandler.removeCallbacks(resumeRunnable);
+                }
+                resumeRunnable = new Runnable() {
+                    @Override
+                    public void run() {
+                        if (remoteView != null) {
+                            remoteView.onResume();
+                        }
+                        resumeRunnable = null;
+                    }
+                };
+                long timeSinceLastDispose = System.currentTimeMillis() - lastDisposedTime;
+                if (timeSinceLastDispose < 600) {
+                    long delay = 600 - timeSinceLastDispose;
+                    mainHandler.postDelayed(resumeRunnable, delay);
+                } else {
+                    mainHandler.post(resumeRunnable);
+                }
                 break;
             case ON_PAUSE:
+                if (resumeRunnable != null) {
+                    mainHandler.removeCallbacks(resumeRunnable);
+                    resumeRunnable = null;
+                }
                 remoteView.onPause();
                 break;
             case ON_STOP:
@@ -197,6 +281,7 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
             case ON_DESTROY:
                 remoteView.onDestroy();
                 remoteView = null;   // 🔴 MOST IMPORTANT LINE
+                lastDisposedTime = System.currentTimeMillis();
                 break;
         }
     }
@@ -234,6 +319,6 @@ public class ScanKitCustomMode implements LifecycleEventObserver, OnResultCallba
     }
 
     public View getView() {
-        return remoteView;
+        return containerView;
     }
 }
